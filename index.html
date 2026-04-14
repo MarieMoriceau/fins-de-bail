@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Fins de bail — Générateur</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { --blue:#1F4E78; --red:#C00000; --green:#548235; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Calibri, sans-serif;
+           background: #f5f7fa; margin:0; padding:40px 20px; color:#222; }
+    .card { max-width: 640px; margin: 0 auto; background: white; border-radius: 14px;
+            box-shadow: 0 10px 30px rgba(0,0,0,.08); padding: 36px; }
+    h1 { margin:0 0 8px; color: var(--blue); }
+    .subtitle { color:#666; margin-bottom: 28px; font-size: 15px; }
+    .drop { border: 2px dashed #c9d4e0; border-radius: 12px; padding: 34px 20px;
+            text-align: center; background: #fafbfd; transition: .2s; cursor: pointer; }
+    .drop:hover, .drop.drag { border-color: var(--blue); background: #eef4fb; }
+    .drop input { display: none; }
+    .drop p { margin: 6px 0; }
+    .drop strong { color: var(--blue); }
+    button { margin-top: 22px; width: 100%; padding: 14px; border: 0; border-radius: 10px;
+             background: var(--blue); color: white; font-size: 16px; font-weight: 600;
+             cursor: pointer; transition: .2s; }
+    button:hover { background: #163a5c; }
+    button:disabled { background: #bbb; cursor: not-allowed; }
+    .legend { margin-top: 26px; padding-top: 22px; border-top: 1px solid #eee;
+              font-size: 13px; color: #666; line-height: 1.55; }
+    .legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%;
+                   margin-right: 6px; vertical-align: middle; }
+    .status { margin-top: 14px; font-size: 14px; color: #666; min-height: 20px; }
+    .filename { color: var(--green); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>📞 Fins de bail triennales</h1>
+    <p class="subtitle">Dépose ton fichier source .xlsx. Le générateur renvoie un classeur prêt à l'emploi avec les 3 listes d'appel (< 6 mois, 6-9 mois, 9-12 mois), dédoublonné et trié par urgence.</p>
+
+    <form id="form" action="/generate" method="post" enctype="multipart/form-data">
+      <label class="drop" id="drop">
+        <input id="file" name="source" type="file" accept=".xlsx" required>
+        <p>📂 <strong>Clique ou glisse</strong> ton fichier .xlsx ici</p>
+        <p class="status" id="status">Aucun fichier sélectionné</p>
+      </label>
+      <button id="btn" type="submit">Générer le fichier d'appel</button>
+    </form>
+
+    <div class="legend">
+      <div><span class="dot" style="background:#C00000"></span>Fin &lt; 6 mois — priorité HAUTE</div>
+      <div><span class="dot" style="background:#ED7D31"></span>Fin 6-9 mois — priorité MOYENNE</div>
+      <div><span class="dot" style="background:#4472C4"></span>Fin 9-12 mois — à anticiper</div>
+    </div>
+  </div>
+
+  <script>
+    const drop = document.getElementById('drop');
+    const file = document.getElementById('file');
+    const status = document.getElementById('status');
+    const btn = document.getElementById('btn');
+    const form = document.getElementById('form');
+
+    file.addEventListener('change', () => {
+      if (file.files[0]) status.innerHTML = '<span class="filename">✓ ' + file.files[0].name + '</span>';
+    });
+    ['dragover','dragenter'].forEach(e => drop.addEventListener(e, ev => {
+      ev.preventDefault(); drop.classList.add('drag');
+    }));
+    ['dragleave','drop'].forEach(e => drop.addEventListener(e, () => drop.classList.remove('drag')));
+    drop.addEventListener('drop', ev => {
+      ev.preventDefault();
+      if (ev.dataTransfer.files[0]) {
+        file.files = ev.dataTransfer.files;
+        file.dispatchEvent(new Event('change'));
+      }
+    });
+    form.addEventListener('submit', () => {
+      btn.disabled = true;
+      btn.textContent = '⏳ Génération en cours…';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Générer le fichier d\'appel'; }, 8000);
+    });
+  </script>
+</body>
+</html>
