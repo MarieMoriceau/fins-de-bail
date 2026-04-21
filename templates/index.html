@@ -35,6 +35,7 @@
     <div class="badges">
       {% if notion_ok %}<span class="badge on">✓ Notion</span>{% else %}<span class="badge off">Notion non configuré</span>{% endif %}
       {% if mail_ok %}<span class="badge on">✓ Email</span>{% else %}<span class="badge off">Email non configuré</span>{% endif %}
+      {% if dropbox_ok %}<span class="badge on">✓ Dropbox</span>{% else %}<span class="badge off">Dropbox non configuré</span>{% endif %}
     </div>
     {% with messages = get_flashed_messages(with_categories=true) %}{% for cat, msg in messages %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}{% endwith %}
     <form action="/upload" method="post" enctype="multipart/form-data" id="form">
