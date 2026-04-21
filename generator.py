@@ -1,20 +1,8 @@
 """Génère le fichier de suivi commercial des fins de bail triennales.
 
-Lit un fichier xlsx source contenant au minimum les colonnes :
-- ID (col A)
-- Société (col B)
-- SIREN Pappers (col C)
-- Siège CP (col L)
-- Siège Ville (col M)
-- ✅ Adresse Retenue (col AB)
-- 📅 Date Adresse Retenue (col AD)
-
-Produit un nouveau fichier xlsx avec :
-- Mode d'emploi
-- Fin < 6 mois (priorité HAUTE)
-- Fin 6-9 mois (priorité MOYENNE)
-- Fin 9-12 mois (à anticiper)
-- Données (copie + colonnes calculées)
+Version optimisée mémoire (compatible Render Free 512 Mo) :
+- Charge le workbook une seule fois
+- Extrait les données en itérant puis construit les onglets d'appel
 """
 from datetime import date, datetime
 from io import BytesIO
@@ -27,25 +15,15 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 
+PIPEDRIVE_DOMAIN = "equationsie"
+
 AUTO_COLS = [
-    ("ID", 10),
-    ("Société", 26),
-    ("Adresse", 38),
-    ("CP", 8),
-    ("Ville", 18),
-    ("Entrée dans les lieux", 14),
-    ("Fin de bail", 13),
-    ("Mois restants", 10),
-    ("SIREN", 12),
+    ("ID", 10), ("Lien Pipedrive", 16), ("Société", 26), ("Adresse", 38), ("CP", 8), ("Ville", 18),
+    ("Entrée dans les lieux", 14), ("Fin de bail", 13), ("Mois restants", 10), ("SIREN", 12),
 ]
 MANUAL_COLS = [
-    ("Contact", 20),
-    ("Téléphone", 14),
-    ("Email", 26),
-    ("Date appel", 12),
-    ("Statut", 14),
-    ("Relance le", 12),
-    ("Notes", 40),
+    ("Négo en charge", 18), ("Contact", 20), ("Téléphone", 14), ("Email", 26), ("Date appel", 12),
+    ("Statut", 14), ("Relance le", 12), ("Notes", 40),
 ]
 CAT_META = {
     "Fin < 6 mois": ("priorité HAUTE", "C00000"),
@@ -100,9 +78,7 @@ def _extract_rows(ws_src, today):
             "adresse": ws_src.cell(row=r, column=28).value,
             "cp": ws_src.cell(row=r, column=12).value,
             "ville": ws_src.cell(row=r, column=13).value,
-            "entree": d,
-            "fin": end,
-            "mois": months_until,
+            "entree": d, "fin": end, "mois": months_until,
         })
     return rows
 
@@ -129,10 +105,8 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
     s.row_dimensions[1].height = 30
 
     s.merge_cells(f"A2:{last_col}2")
-    s["A2"] = (
-        f"Généré le {today.strftime('%d/%m/%Y')}. "
-        "Bleu = infos société (auto). Vert = à remplir après appel."
-    )
+    s["A2"] = (f"Généré le {today.strftime('%d/%m/%Y')}. "
+               "Bleu = infos société. Vert = à remplir après appel.")
     s["A2"].font = Font(italic=True, size=10, color="595959")
     s["A2"].alignment = Alignment(horizontal="center", vertical="center")
     s.row_dimensions[2].height = 22
@@ -147,24 +121,33 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
         s.column_dimensions[get_column_letter(i)].width = width
     s.row_dimensions[header_row].height = 32
 
+    manual_fill_cell = PatternFill("solid", start_color="EAF4E6")
+    cell_font = Font(name="Calibri", size=10)
+    link_font = Font(name="Calibri", size=10, color="0563C1", underline="single")
     for idx, r in enumerate(data_list):
         excel_row = header_row + 1 + idx
-        values = [r["id"], r["societe"], r["adresse"], r["cp"], r["ville"],
+        values = [r["id"], None, r["societe"], r["adresse"], r["cp"], r["ville"],
                   r["entree"], r["fin"], r["mois"], r["siren"]]
         for i, v in enumerate(values, 1):
             c = s.cell(row=excel_row, column=i, value=v)
             c.border = border
-            c.font = Font(name="Calibri", size=10)
+            c.font = cell_font
             c.alignment = Alignment(vertical="center")
-            if i in (6, 7):
+            if i == 2 and r["id"] is not None:
+                # Lien Pipedrive cliquable
+                c.value = "Ouvrir"
+                c.hyperlink = f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/organization/{r['id']}"
+                c.font = link_font
+                c.alignment = Alignment(vertical="center", horizontal="center")
+            elif i in (7, 8):
                 c.number_format = "DD/MM/YYYY"
-            elif i in (4, 9):
+            elif i in (5, 10):
                 c.number_format = "0;;;@"
         for j in range(1, len(MANUAL_COLS) + 1):
             col_i = len(AUTO_COLS) + j
             c = s.cell(row=excel_row, column=col_i)
             c.border = border
-            c.fill = PatternFill("solid", start_color="EAF4E6")
+            c.fill = manual_fill_cell
             if MANUAL_COLS[j - 1][0] in ("Date appel", "Relance le"):
                 c.number_format = "DD/MM/YYYY"
 
@@ -176,45 +159,39 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
             c = s.cell(row=excel_row, column=i)
             c.border = border
             if i > len(AUTO_COLS):
-                c.fill = PatternFill("solid", start_color="EAF4E6")
+                c.fill = manual_fill_cell
 
-    mois_range = f"H{header_row + 1}:H{last_data_row + extra_rows}"
-    rules = [
+    mois_col = get_column_letter(9)  # "Mois restants" = col 9 (I)
+    mois_range = f"{mois_col}{header_row + 1}:{mois_col}{last_data_row + extra_rows}"
+    for op, formula, bg, fg in [
         ("lessThan", ["3"], "F8CBAD", "9C0006"),
         ("between", ["3", "5"], "FFE699", "806000"),
         ("between", ["6", "8"], "FFF2CC", "7F6000"),
         ("between", ["9", "12"], "DDEBF7", "1F4E78"),
-    ]
-    for op, formula, bg, fg in rules:
-        s.conditional_formatting.add(
-            mois_range,
+    ]:
+        s.conditional_formatting.add(mois_range,
             CellIsRule(operator=op, formula=formula,
                        fill=PatternFill("solid", start_color=bg),
-                       font=Font(bold=True, color=fg)),
-        )
+                       font=Font(bold=True, color=fg)))
 
-    statut_letter = get_column_letter(len(AUTO_COLS) + 5)
+    statut_letter = get_column_letter(len(AUTO_COLS) + 6)  # "Statut" = 6e col manuelle
     statut_range = f"{statut_letter}{header_row + 1}:{statut_letter}{last_data_row + extra_rows}"
     for val, bg, fg in [("OK signé", "C6EFCE", "006100"),
                          ("À rappeler", "FFEB9C", "9C5700"),
                          ("Refus", "FFC7CE", "9C0006"),
                          ("Injoignable", "D9D9D9", "595959")]:
-        s.conditional_formatting.add(
-            statut_range,
+        s.conditional_formatting.add(statut_range,
             CellIsRule(operator="equal", formula=[f'"{val}"'],
                        fill=PatternFill("solid", start_color=bg),
-                       font=Font(bold=True, color=fg)),
-        )
-    dv = DataValidation(
-        type="list",
+                       font=Font(bold=True, color=fg)))
+    dv = DataValidation(type="list",
         formula1='"À appeler,À rappeler,OK signé,Refus,Injoignable,Ne pas contacter"',
-        allow_blank=True,
-    )
+        allow_blank=True)
     dv.add(statut_range)
     s.add_data_validation(dv)
 
     s.auto_filter.ref = f"A{header_row}:{last_col}{last_data_row + extra_rows}"
-    s.freeze_panes = s.cell(row=header_row + 1, column=3)
+    s.freeze_panes = s.cell(row=header_row + 1, column=4)  # figer ID + Lien + Société
 
 
 def _write_readme(wb, today, counts):
@@ -239,8 +216,8 @@ def _write_readme(wb, today, counts):
         ("🟠 Fin 6-9 mois", f"{counts['Fin 6-9 mois']} sociétés — priorité MOYENNE."),
         ("🔵 Fin 9-12 mois", f"{counts['Fin 9-12 mois']} sociétés — à anticiper."),
         ("", ""),
-        ("Colonnes bleues", "Auto (ID, Société, Adresse, CP, Ville, Entrée, Fin de bail, Mois restants, SIREN)."),
-        ("Colonnes vertes", "À remplir (Contact, Téléphone, Email, Date appel, Statut, Relance, Notes)."),
+        ("Colonnes bleues", "Auto (ID, Lien Pipedrive, Société, Adresse, CP, Ville, Entrée, Fin de bail, Mois restants, SIREN)."),
+        ("Colonnes vertes", "À remplir (Négo en charge, Contact, Téléphone, Email, Date appel, Statut, Relance, Notes)."),
         ("Statut", "Liste déroulante : À appeler, À rappeler, OK signé, Refus, Injoignable, Ne pas contacter."),
         ("Code couleur Mois", "Rouge < 3 • Orange 3-5 • Jaune 6-8 • Bleu 9-12."),
     ]
@@ -255,8 +232,32 @@ def _write_readme(wb, today, counts):
 def generate(source_bytes: bytes, today=None) -> bytes:
     """Prend un xlsx source en bytes, renvoie le xlsx généré en bytes."""
     today = today or date.today()
-    wb_src = openpyxl.load_workbook(BytesIO(source_bytes), data_only=True)
-    ws_src = wb_src.active
+
+    # Un seul chargement : data_only=True pour lire les valeurs, on l'utilisera aussi pour écrire.
+    wb = openpyxl.load_workbook(BytesIO(source_bytes), data_only=True)
+    # Chercher l'onglet "Données" s'il existe, sinon utiliser l'onglet actif
+    if "Données" in wb.sheetnames:
+        ws_src = wb["Données"]
+    else:
+        ws_src = wb.active
+        ws_src.title = "Données"
+
+    # Nettoyage : supprime les formules/références externes cassées et les erreurs Excel
+    # (ex : VLOOKUP vers un classeur externe qui n'existe plus, valeurs #N/A, #REF!, etc.)
+    for row in ws_src.iter_rows():
+        for cell in row:
+            v = cell.value
+            if isinstance(v, str):
+                if v.startswith("="):
+                    cell.value = None
+                elif v.strip() in ("#N/A", "#REF!", "#VALUE!", "#NAME?", "#DIV/0!", "#NUM!", "#NULL!"):
+                    cell.value = None
+
+    # Supprime les liens externes du workbook (références vers d'autres classeurs)
+    try:
+        wb._external_links = []
+    except Exception:
+        pass
 
     rows = _extract_rows(ws_src, today)
     cat_rows = {
@@ -266,16 +267,8 @@ def generate(source_bytes: bytes, today=None) -> bytes:
     }
     counts = {k: len(v) for k, v in cat_rows.items()}
 
-    # Workbook de sortie : on repart du fichier source en ajoutant les onglets
-    wb = openpyxl.load_workbook(BytesIO(source_bytes))
-    # Renomme l'onglet principal en "Données" si besoin
-    main = wb.active
-    if main.title != "Données":
-        main.title = "Données"
-
     for sheet_name, data_list in cat_rows.items():
         _write_call_sheet(wb, sheet_name, data_list, today)
-
     _write_readme(wb, today, counts)
 
     order = ["Mode d'emploi", "Fin < 6 mois", "Fin 6-9 mois", "Fin 9-12 mois", "Données"]
