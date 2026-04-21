@@ -97,7 +97,6 @@ def _extract_rows(source_bytes: bytes, today, mapping):
     col_cp    = mapping.get("cp")
     col_ville = mapping.get("ville")
 
-    # Déterminer les colonnes max à lire
     all_cols = [col_id, col_soc, col_date]
     for c in [col_siren, col_addr, col_cp, col_ville]:
         if c:
@@ -106,13 +105,10 @@ def _extract_rows(source_bytes: bytes, today, mapping):
 
     seen = set()
     rows = []
-    row_num = 0
     for row_cells in ws.iter_rows(min_row=2, max_col=max_col, values_only=False):
-        row_num += 1
         id_val = row_cells[col_id - 1].value if col_id - 1 < len(row_cells) else None
         if id_val is None or id_val in seen:
             continue
-        # Ignorer les formules et erreurs
         if isinstance(id_val, str) and (id_val.startswith("=") or id_val.strip().startswith("#")):
             continue
         seen.add(id_val)
@@ -147,7 +143,7 @@ def _extract_rows(source_bytes: bytes, today, mapping):
             "entree": d, "fin": end, "mois": months_until,
         })
 
-    wb.close()  # Libère la mémoire du workbook source
+    wb.close()
     return rows
 
 
@@ -297,21 +293,18 @@ def generate(source_bytes: bytes, mapping: dict = None, today=None) -> tuple[byt
     today = today or date.today()
     mapping = mapping or DEFAULT_MAPPING
 
-    # Phase 1 : extraction (read_only → libère la RAM du source)
     rows = _extract_rows(source_bytes, today, mapping)
 
-    # Phase 2 : catégorisation
     cat_rows = {
         "Fin < 6 mois":  sorted([r for r in rows if r["mois"] < 6], key=lambda x: (x["mois"], x["fin"])),
         "Fin 6-9 mois":  sorted([r for r in rows if 6 <= r["mois"] < 9], key=lambda x: (x["mois"], x["fin"])),
         "Fin 9-12 mois": sorted([r for r in rows if 9 <= r["mois"] <= 12], key=lambda x: (x["mois"], x["fin"])),
     }
-    del rows  # Libère la liste complète
+    del rows
     counts = {k: len(v) for k, v in cat_rows.items()}
 
-    # Phase 3 : nouveau workbook (pas de rechargement du source)
     wb = openpyxl.Workbook()
-    wb.remove(wb.active)  # Supprime la feuille par défaut
+    wb.remove(wb.active)
 
     for sheet_name, data_list in cat_rows.items():
         _write_call_sheet(wb, sheet_name, data_list, today)

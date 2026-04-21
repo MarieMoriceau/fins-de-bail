@@ -7,11 +7,13 @@ services:
     startCommand: gunicorn app:app --timeout 300 --workers 1
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.9
+        value: "3.11.9"
+      # --- Notion ---
       - key: NOTION_TOKEN
         sync: false
       - key: BAUX_DATABASE_ID
         sync: false
+      # --- SMTP (OVH Pro) ---
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
@@ -21,4 +23,16 @@ services:
       - key: SMTP_PASS
         sync: false
       - key: SMTP_FROM
+        sync: false
+      # --- Dropbox ---
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
+        sync: false
+      # --- Auto-refresh ---
+      - key: SYNC_SECRET
+        sync: false
+      - key: AUTO_EMAIL
         sync: false

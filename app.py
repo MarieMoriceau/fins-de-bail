@@ -1,9 +1,14 @@
 """
-app.py — Générateur fins de bail + sync Notion + mail.
+app.py — Générateur fins de bail + sync Notion + mail + auto-refresh Dropbox.
 
-Optimisé mémoire :
-- L'Excel est renvoyé immédiatement à l'utilisateur
-- La sync Notion se lance en arrière-plan (background thread)
+Routes :
+  GET  /           → page d'upload
+  POST /upload     → lit headers, propose mapping
+  POST /generate   → génère Excel + mail + Notion (background)
+  GET  /template   → fichier template vierge
+  POST /auto       → refresh mensuel automatique (Dropbox → recalcul → Notion + mail + Dropbox)
+
+Optimisé mémoire pour Render Free (512 Mo).
 """
 
 import gc
@@ -15,11 +20,16 @@ import threading
 from datetime import date
 from io import BytesIO
 
-from flask import Flask, render_template, request, send_file, redirect, url_for, flash
+from flask import Flask, render_template, request, send_file, redirect, url_for, flash, jsonify
 
 from generator import generate, read_headers, REQUIRED_FIELDS, OPTIONAL_FIELDS, DEFAULT_MAPPING
+from generator import _write_call_sheet, _write_readme, CAT_META
 from notion_sync import sync_to_notion, is_configured as notion_configured
 from mailer import send_file as send_mail, is_configured as mail_configured
+from dropbox_client import fetch_xlsx_files, upload_file as dropbox_upload, is_configured as dropbox_configured
+from auto_refresh import extract_from_generated, categorize
+
+import openpyxl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("app")
@@ -28,14 +38,22 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-fins-de-bail-2026")
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
+AUTO_SECRET = os.environ.get("SYNC_SECRET", "")
+AUTO_EMAIL  = os.environ.get("AUTO_EMAIL", "mmoriceau@equation-sie.com")
+
 _temp_files = {}
 
+
+# ─────────────────────────────────────────────
+#  Pages web (upload manuel)
+# ─────────────────────────────────────────────
 
 @app.route("/")
 def index():
     return render_template("index.html",
                            notion_ok=notion_configured(),
-                           mail_ok=mail_configured())
+                           mail_ok=mail_configured(),
+                           dropbox_ok=dropbox_configured())
 
 
 @app.route("/template")
@@ -132,7 +150,6 @@ def generate_route():
 
     today = date.today()
 
-    # 1. Génération Excel (mémoire optimisée : read_only + nouveau wb)
     log.info("Génération Excel...")
     xlsx_bytes, cat_rows = generate(source_bytes, mapping, today)
     del source_bytes
@@ -142,7 +159,7 @@ def generate_route():
     total = sum(counts.values())
     log.info(f"  OK : {total} sociétés ({counts})")
 
-    # 2. Mail (rapide, avant de libérer xlsx_bytes)
+    # Mail
     filename = f"Fins_de_bail_triennal_{today.strftime('%Y-%m-%d')}.xlsx"
     if email and mail_configured():
         log.info(f"Envoi mail à {email}...")
@@ -151,9 +168,8 @@ def generate_route():
         except Exception as e:
             log.error(f"Mail erreur : {e}")
 
-    # 3. Notion en arrière-plan (ne bloque pas le téléchargement)
+    # Notion en arrière-plan
     if notion_configured():
-        # Copier cat_rows en données légères pour le thread
         cat_rows_copy = {k: list(v) for k, v in cat_rows.items()}
         def bg_sync():
             try:
@@ -165,13 +181,144 @@ def generate_route():
                 log.error(f"  Notion erreur : {e}")
         threading.Thread(target=bg_sync, daemon=True).start()
 
-    # 4. Téléchargement immédiat
+    # Téléchargement immédiat
     return send_file(
         BytesIO(xlsx_bytes),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         as_attachment=True,
         download_name=filename,
     )
+
+
+# ─────────────────────────────────────────────
+#  Auto-refresh mensuel (Dropbox → recalcul)
+# ─────────────────────────────────────────────
+
+@app.route("/auto", methods=["POST"])
+def auto_refresh():
+    """
+    Process mensuel automatique :
+    1. Télécharge les fichiers générés depuis Dropbox
+    2. Extrait les données, recalcule les mois restants
+    3. Re-catégorise (< 6, 6-9, 9-12 mois)
+    4. Génère un nouveau fichier Excel
+    5. Sync Notion
+    6. Envoie par mail
+    7. Upload le résultat sur Dropbox
+    """
+    # Auth par header ou query param
+    secret = request.headers.get("X-Sync-Secret", "") or request.args.get("secret", "")
+    if not AUTO_SECRET or secret != AUTO_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if not dropbox_configured():
+        return jsonify({"error": "Dropbox non configuré"}), 500
+
+    today = date.today()
+    log.info(f"=== AUTO-REFRESH {today.strftime('%d/%m/%Y')} ===")
+
+    # 1. Télécharger les fichiers depuis Dropbox
+    try:
+        files = fetch_xlsx_files()
+    except Exception as e:
+        log.error(f"Dropbox fetch échoué : {e}")
+        return jsonify({"error": f"Dropbox fetch: {e}"}), 500
+
+    if not files:
+        log.warning("Aucun fichier .xlsx sur Dropbox")
+        return jsonify({"error": "Aucun fichier .xlsx dans /FINS DE BAIL"}), 404
+
+    log.info(f"  {len(files)} fichier(s) récupéré(s) depuis Dropbox")
+
+    # 2. Extraire et recalculer
+    try:
+        rows = extract_from_generated(files, today)
+    except Exception as e:
+        log.error(f"Extraction échouée : {e}")
+        return jsonify({"error": f"Extraction: {e}"}), 500
+
+    if not rows:
+        log.warning("Aucune donnée exploitable dans les fichiers")
+        return jsonify({"error": "Aucune donnée exploitable"}), 404
+
+    # 3. Catégoriser
+    cat_rows = categorize(rows)
+    counts = {k: len(v) for k, v in cat_rows.items()}
+    total = sum(counts.values())
+    log.info(f"  {total} sociétés réparties : {counts}")
+
+    # 4. Générer le nouveau fichier Excel
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    for sheet_name, data_list in cat_rows.items():
+        _write_call_sheet(wb, sheet_name, data_list, today)
+    _write_readme(wb, today, counts)
+
+    buf = BytesIO()
+    wb.save(buf)
+    wb.close()
+    xlsx_bytes = buf.getvalue()
+    del buf
+    gc.collect()
+
+    filename = f"Fins_de_bail_triennal_{today.strftime('%Y-%m-%d')}.xlsx"
+    log.info(f"  Excel généré : {filename} ({len(xlsx_bytes)} octets)")
+
+    # 5. Sync Notion (synchrone ici, pas de téléchargement à renvoyer)
+    notion_stats = {"skipped": True}
+    if notion_configured():
+        try:
+            log.info("  Sync Notion...")
+            notion_stats = sync_to_notion(cat_rows)
+            log.info(f"  Notion : {notion_stats}")
+        except Exception as e:
+            log.error(f"  Notion erreur : {e}")
+            notion_stats = {"error": str(e)}
+
+    # 6. Envoyer par mail
+    mail_ok = False
+    if mail_configured() and AUTO_EMAIL:
+        try:
+            log.info(f"  Mail → {AUTO_EMAIL}")
+            send_mail(AUTO_EMAIL, xlsx_bytes, filename, counts)
+            mail_ok = True
+        except Exception as e:
+            log.error(f"  Mail erreur : {e}")
+
+    # 7. Upload sur Dropbox (écrase l'ancien)
+    dropbox_ok = False
+    try:
+        log.info(f"  Upload Dropbox → {filename}")
+        dropbox_upload(filename, xlsx_bytes)
+        dropbox_ok = True
+    except Exception as e:
+        log.error(f"  Dropbox upload erreur : {e}")
+
+    result = {
+        "status": "ok",
+        "date": today.strftime("%Y-%m-%d"),
+        "total": total,
+        "counts": counts,
+        "notion": notion_stats,
+        "mail": mail_ok,
+        "dropbox_upload": dropbox_ok,
+    }
+    log.info(f"=== AUTO-REFRESH TERMINÉ === {result}")
+    return jsonify(result)
+
+
+# ─────────────────────────────────────────────
+#  Health check
+# ─────────────────────────────────────────────
+
+@app.route("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "notion": notion_configured(),
+        "mail": mail_configured(),
+        "dropbox": dropbox_configured(),
+    })
 
 
 if __name__ == "__main__":
