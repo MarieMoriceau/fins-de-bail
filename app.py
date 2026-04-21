@@ -194,7 +194,7 @@ def generate_route():
 #  Auto-refresh mensuel (Dropbox → recalcul)
 # ─────────────────────────────────────────────
 
-@app.route("/auto", methods=["POST"])
+@app.route("/auto", methods=["GET", "POST"])
 def auto_refresh():
     """
     Process mensuel automatique :
