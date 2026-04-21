@@ -5,106 +5,59 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fins de bail — Générateur</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-           background: #f0f2f5; min-height: 100vh; display: flex; align-items: center;
-           justify-content: center; padding: 20px; }
-    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08);
-            padding: 40px; max-width: 520px; width: 100%; }
-    h1 { font-size: 1.5rem; color: #1F4E78; margin-bottom: 6px; text-align: center; }
-    .subtitle { color: #666; font-size: .9rem; margin-bottom: 20px; text-align: center; }
-    .badges { display: flex; gap: 8px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
-    .badge { display: inline-block; padding: 4px 12px; border-radius: 20px;
-             font-size: .75rem; font-weight: 600; }
-    .badge.on  { background: #C6EFCE; color: #006100; }
-    .badge.off { background: #FFE699; color: #806000; }
-    .upload-area { border: 2px dashed #ccc; border-radius: 8px; padding: 28px;
-                   margin-bottom: 16px; transition: border-color .2s; cursor: pointer;
-                   text-align: center; }
-    .upload-area:hover { border-color: #1F4E78; }
-    .upload-area.dragging { border-color: #1F4E78; background: #f8fbff; }
-    .upload-area input[type="file"] { display: none; }
-    .upload-area p { color: #888; font-size: .95rem; }
-    .filename { color: #1F4E78; font-weight: 600; margin-top: 8px; }
-    label { display: block; font-size: .85rem; color: #555; margin-bottom: 4px; margin-top: 12px; }
-    input[type="email"] { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px;
-                          font-size: .95rem; }
-    button { display: block; width: 100%; background: #1F4E78; color: #fff; border: none;
-             padding: 12px; border-radius: 8px; font-size: 1rem; cursor: pointer;
-             margin-top: 20px; transition: background .2s; }
-    button:hover { background: #163a5a; }
-    button:disabled { background: #aaa; cursor: not-allowed; }
-    .template-link { text-align: center; margin-top: 16px; }
-    .template-link a { color: #1F4E78; font-size: .85rem; }
-    .info { text-align: center; margin-top: 12px; font-size: .8rem; color: #999; }
-    .flash { padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: .9rem; }
-    .flash.error { background: #FFC7CE; color: #9C0006; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+    .card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);padding:40px;max-width:520px;width:100%}
+    h1{font-size:1.5rem;color:#1F4E78;margin-bottom:6px;text-align:center}
+    .subtitle{color:#666;font-size:.9rem;margin-bottom:20px;text-align:center}
+    .badges{display:flex;gap:8px;justify-content:center;margin-bottom:20px;flex-wrap:wrap}
+    .badge{padding:4px 12px;border-radius:20px;font-size:.75rem;font-weight:600}
+    .badge.on{background:#C6EFCE;color:#006100}.badge.off{background:#FFE699;color:#806000}
+    .upload-area{border:2px dashed #ccc;border-radius:8px;padding:28px;margin-bottom:16px;cursor:pointer;text-align:center;transition:border-color .2s}
+    .upload-area:hover{border-color:#1F4E78}
+    .upload-area input[type="file"]{display:none}
+    .upload-area p{color:#888;font-size:.95rem}
+    .filename{color:#1F4E78;font-weight:600;margin-top:8px}
+    label{display:block;font-size:.85rem;color:#555;margin-bottom:4px;margin-top:12px}
+    input[type="email"]{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:6px;font-size:.95rem}
+    button{display:block;width:100%;background:#1F4E78;color:#fff;border:none;padding:12px;border-radius:8px;font-size:1rem;cursor:pointer;margin-top:20px;transition:background .2s}
+    button:hover{background:#163a5a}button:disabled{background:#aaa;cursor:not-allowed}
+    .template-link{text-align:center;margin-top:16px}.template-link a{color:#1F4E78;font-size:.85rem}
+    .info{text-align:center;margin-top:12px;font-size:.8rem;color:#999}
+    .flash{padding:10px 16px;border-radius:6px;margin-bottom:16px;font-size:.9rem}
+    .flash.error{background:#FFC7CE;color:#9C0006}
   </style>
 </head>
 <body>
   <div class="card">
     <h1>📞 Fins de bail triennales</h1>
     <p class="subtitle">Upload → mapping colonnes → Excel + Notion + mail</p>
-
     <div class="badges">
-      {% if notion_ok %}
-        <span class="badge on">✓ Notion</span>
-      {% else %}
-        <span class="badge off">Notion non configuré</span>
-      {% endif %}
-      {% if mail_ok %}
-        <span class="badge on">✓ Email SMTP</span>
-      {% else %}
-        <span class="badge off">Email non configuré</span>
-      {% endif %}
+      {% if notion_ok %}<span class="badge on">✓ Notion</span>{% else %}<span class="badge off">Notion non configuré</span>{% endif %}
+      {% if mail_ok %}<span class="badge on">✓ Email</span>{% else %}<span class="badge off">Email non configuré</span>{% endif %}
     </div>
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% for cat, msg in messages %}
-        <div class="flash {{ cat }}">{{ msg }}</div>
-      {% endfor %}
-    {% endwith %}
-
+    {% with messages = get_flashed_messages(with_categories=true) %}{% for cat, msg in messages %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}{% endwith %}
     <form action="/upload" method="post" enctype="multipart/form-data" id="form">
       <div class="upload-area" id="drop">
         <p>📂 Glisse ton .xlsx ici ou <u>clique pour choisir</u></p>
         <input type="file" name="file" id="file" accept=".xlsx">
         <p class="filename" id="fname"></p>
       </div>
-
       <label for="email">Email pour recevoir le fichier (optionnel)</label>
       <input type="email" name="email" id="email" placeholder="marie@equation-sie.com">
-
       <button type="submit" id="btn" disabled>Étape suivante : mapper les colonnes</button>
     </form>
-
-    <div class="template-link">
-      <a href="/template">📥 Télécharger le fichier template vierge</a>
-    </div>
-    <p class="info">Si ton fichier n'a pas les mêmes colonnes que le template,<br>tu pourras mapper les champs à l'étape suivante.</p>
+    <div class="template-link"><a href="/template">📥 Télécharger le fichier template vierge</a></div>
+    <p class="info">Si ton fichier n'a pas les mêmes colonnes, tu pourras mapper à l'étape suivante.</p>
   </div>
-
   <script>
-    const drop = document.getElementById('drop');
-    const input = document.getElementById('file');
-    const fname = document.getElementById('fname');
-    const btn = document.getElementById('btn');
-
-    drop.addEventListener('click', () => input.click());
-    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragging'); });
-    drop.addEventListener('dragleave', () => drop.classList.remove('dragging'));
-    drop.addEventListener('drop', e => {
-      e.preventDefault(); drop.classList.remove('dragging');
-      if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; update(); }
-    });
-    input.addEventListener('change', update);
-
-    function update() {
-      if (input.files.length) {
-        fname.textContent = input.files[0].name;
-        btn.disabled = false;
-      }
-    }
+    const drop=document.getElementById('drop'),input=document.getElementById('file'),fname=document.getElementById('fname'),btn=document.getElementById('btn');
+    drop.addEventListener('click',()=>input.click());
+    drop.addEventListener('dragover',e=>{e.preventDefault();drop.style.borderColor='#1F4E78'});
+    drop.addEventListener('dragleave',()=>drop.style.borderColor='#ccc');
+    drop.addEventListener('drop',e=>{e.preventDefault();drop.style.borderColor='#ccc';if(e.dataTransfer.files.length){input.files=e.dataTransfer.files;u()}});
+    input.addEventListener('change',u);
+    function u(){if(input.files.length){fname.textContent=input.files[0].name;btn.disabled=false}}
   </script>
 </body>
 </html>
