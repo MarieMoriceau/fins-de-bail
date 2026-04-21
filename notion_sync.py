@@ -40,7 +40,7 @@ PROP = {
     "nego":     "Négo",
     "tranche":  "Tranche d urgence",
     "campagne": "campagne",
-    "archive":  "archivé",
+    "archive":  "Archivé",
 }
 CAMPAGNE_TAG = "Fin de bail"
 
