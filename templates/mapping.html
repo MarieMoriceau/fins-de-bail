@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mapping colonnes — Fins de bail</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+           background: #f0f2f5; min-height: 100vh; display: flex; align-items: center;
+           justify-content: center; padding: 20px; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08);
+            padding: 36px; max-width: 600px; width: 100%; }
+    h1 { font-size: 1.3rem; color: #1F4E78; margin-bottom: 4px; }
+    .subtitle { color: #666; font-size: .85rem; margin-bottom: 20px; }
+    .file-info { background: #f8fbff; border-radius: 6px; padding: 10px 14px;
+                 margin-bottom: 20px; font-size: .85rem; color: #1F4E78; }
+    .section-title { font-size: .9rem; font-weight: 600; margin: 16px 0 8px; padding: 6px 0;
+                     border-bottom: 2px solid #1F4E78; color: #1F4E78; }
+    .section-title.opt { border-color: #548235; color: #548235; }
+    .field-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .field-label { flex: 0 0 220px; font-size: .85rem; color: #333; }
+    .field-label .req { color: #C00000; font-weight: bold; }
+    .field-label .desc { display: block; font-size: .75rem; color: #888; }
+    select { flex: 1; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px;
+             font-size: .85rem; background: #fff; }
+    select.matched { border-color: #548235; background: #f6faf4; }
+    button { display: block; width: 100%; background: #1F4E78; color: #fff; border: none;
+             padding: 12px; border-radius: 8px; font-size: 1rem; cursor: pointer;
+             margin-top: 24px; transition: background .2s; }
+    button:hover { background: #163a5a; }
+    .spinner { display: none; text-align: center; margin-top: 16px; font-size: .9rem; color: #666; }
+    .spinner.active { display: block; }
+    .badges { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .badge { padding: 3px 10px; border-radius: 16px; font-size: .7rem; font-weight: 600; }
+    .badge.on  { background: #C6EFCE; color: #006100; }
+    .badge.off { background: #FFE699; color: #806000; }
+    a.back { display: inline-block; margin-top: 12px; font-size: .85rem; color: #1F4E78; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔗 Mapping des colonnes</h1>
+    <p class="subtitle">Associe chaque champ requis à une colonne de ton fichier.</p>
+
+    <div class="file-info">📄 {{ filename }}</div>
+
+    <div class="badges">
+      {% if notion_ok %}<span class="badge on">✓ Notion sync</span>{% endif %}
+      {% if mail_ok and email %}<span class="badge on">✓ Mail → {{ email }}</span>{% endif %}
+    </div>
+
+    <form action="/generate" method="post" id="genform">
+      <input type="hidden" name="file_id" value="{{ file_id }}">
+      <input type="hidden" name="email" value="{{ email }}">
+
+      <div class="section-title">Champs obligatoires</div>
+      {% for key in fields %}
+        {% if key in required %}
+        <div class="field-row">
+          <div class="field-label">
+            <span class="req">*</span> {{ fields[key] }}
+            <span class="desc">{{ key }}</span>
+          </div>
+          <select name="map_{{ key }}" class="{{ 'matched' if auto_map.get(key) else '' }}" required>
+            <option value="">— choisir —</option>
+            {% for col, header in headers %}
+              <option value="{{ col }}" {{ 'selected' if auto_map.get(key) == col else '' }}>
+                {{ header }} (col {{ col }})
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
+      {% endfor %}
+
+      <div class="section-title opt">Champs optionnels</div>
+      {% for key in fields %}
+        {% if key not in required %}
+        <div class="field-row">
+          <div class="field-label">
+            {{ fields[key] }}
+            <span class="desc">{{ key }}</span>
+          </div>
+          <select name="map_{{ key }}" class="{{ 'matched' if auto_map.get(key) else '' }}">
+            <option value="">— ignorer —</option>
+            {% for col, header in headers %}
+              <option value="{{ col }}" {{ 'selected' if auto_map.get(key) == col else '' }}>
+                {{ header }} (col {{ col }})
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
+      {% endfor %}
+
+      <button type="submit" id="btn">🚀 Générer le fichier</button>
+    </form>
+
+    <div class="spinner" id="spinner">
+      ⏳ Génération en cours...
+      {% if notion_ok %}<br>+ sync Notion (2-3 min pour 400+ sociétés){% endif %}
+      {% if mail_ok and email %}<br>+ envoi mail{% endif %}
+    </div>
+
+    <a href="/" class="back">← Retour</a>
+  </div>
+
+  <script>
+    document.getElementById('genform').addEventListener('submit', function() {
+      document.getElementById('btn').disabled = true;
+      document.getElementById('btn').textContent = 'Patiente...';
+      document.getElementById('spinner').classList.add('active');
+    });
+  </script>
+</body>
+</html>
