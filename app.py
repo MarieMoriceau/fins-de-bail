@@ -264,16 +264,18 @@ def auto_refresh():
     filename = f"Fins_de_bail_triennal_{today.strftime('%Y-%m-%d')}.xlsx"
     log.info(f"  Excel généré : {filename} ({len(xlsx_bytes)} octets)")
 
-    # 5. Sync Notion (synchrone ici, pas de téléchargement à renvoyer)
-    notion_stats = {"skipped": True}
+   # 5. Sync Notion (arrière-plan pour éviter le timeout gunicorn)
+    notion_stats = {"launched": True}
     if notion_configured():
-        try:
-            log.info("  Sync Notion...")
-            notion_stats = sync_to_notion(cat_rows)
-            log.info(f"  Notion : {notion_stats}")
-        except Exception as e:
-            log.error(f"  Notion erreur : {e}")
-            notion_stats = {"error": str(e)}
+        cat_rows_copy = {k: list(v) for k, v in cat_rows.items()}
+        def bg_notion():
+            try:
+                log.info("  Sync Notion (arrière-plan)...")
+                stats = sync_to_notion(cat_rows_copy)
+                log.info(f"  Notion terminé : {stats}")
+            except Exception as e:
+                log.error(f"  Notion erreur : {e}")
+        threading.Thread(target=bg_notion, daemon=True).start()
 
     # 6. Envoyer par mail
     mail_ok = False
