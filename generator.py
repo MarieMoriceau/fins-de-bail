@@ -1,8 +1,6 @@
 """Génère le fichier de suivi commercial des fins de bail triennales.
 
-Version optimisée mémoire (compatible Render Free 512 Mo) :
-- Charge le workbook une seule fois
-- Extrait les données en itérant puis construit les onglets d'appel
+Accepte un mapping de colonnes dynamique pour s'adapter à tout fichier source.
 """
 from datetime import date, datetime
 from io import BytesIO
@@ -16,6 +14,24 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 
 PIPEDRIVE_DOMAIN = "equationsie"
+
+# Champs requis du fichier source → clé interne
+REQUIRED_FIELDS = {
+    "id":      "ID (identifiant unique, ex: ID Pipedrive)",
+    "societe": "Nom de la société",
+    "date":    "Date d'entrée dans les lieux",
+}
+OPTIONAL_FIELDS = {
+    "siren":   "SIREN",
+    "adresse": "Adresse",
+    "cp":      "Code postal",
+    "ville":   "Ville",
+}
+
+# Mapping par défaut (fichier Equation standard, colonnes 1-indexed)
+DEFAULT_MAPPING = {
+    "id": 1, "societe": 2, "siren": 3, "cp": 12, "ville": 13, "adresse": 28, "date": 30,
+}
 
 AUTO_COLS = [
     ("ID", 10), ("Lien Pipedrive", 16), ("Société", 26), ("Adresse", 38), ("CP", 8), ("Ville", 18),
@@ -56,15 +72,40 @@ def _months_diff(start, end):
     return months
 
 
-def _extract_rows(ws_src, today):
+def read_headers(source_bytes: bytes) -> list[tuple[int, str]]:
+    """Lit la ligne 1 du fichier et renvoie [(col_index_1based, header_text), ...]."""
+    wb = openpyxl.load_workbook(BytesIO(source_bytes), data_only=True, read_only=True)
+    if "Données" in wb.sheetnames:
+        ws = wb["Données"]
+    else:
+        ws = wb.active
+    headers = []
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(row=1, column=c).value
+        if v is not None:
+            headers.append((c, str(v).strip()))
+    wb.close()
+    return headers
+
+
+def _extract_rows(ws_src, today, mapping):
+    """Extrait les lignes avec le mapping dynamique."""
+    col_id   = mapping["id"]
+    col_soc  = mapping["societe"]
+    col_date = mapping["date"]
+    col_siren = mapping.get("siren")
+    col_addr  = mapping.get("adresse")
+    col_cp    = mapping.get("cp")
+    col_ville = mapping.get("ville")
+
     seen = set()
     rows = []
     for r in range(2, ws_src.max_row + 1):
-        id_ = ws_src.cell(row=r, column=1).value
+        id_ = ws_src.cell(row=r, column=col_id).value
         if id_ is None or id_ in seen:
             continue
         seen.add(id_)
-        d = _parse_date(ws_src.cell(row=r, column=30).value)
+        d = _parse_date(ws_src.cell(row=r, column=col_date).value)
         if d is None:
             continue
         months_since = _months_diff(d, today)
@@ -73,11 +114,11 @@ def _extract_rows(ws_src, today):
         months_until = _months_diff(today, end)
         rows.append({
             "id": id_,
-            "societe": ws_src.cell(row=r, column=2).value,
-            "siren": ws_src.cell(row=r, column=3).value,
-            "adresse": ws_src.cell(row=r, column=28).value,
-            "cp": ws_src.cell(row=r, column=12).value,
-            "ville": ws_src.cell(row=r, column=13).value,
+            "societe": ws_src.cell(row=r, column=col_soc).value,
+            "siren":   ws_src.cell(row=r, column=col_siren).value if col_siren else None,
+            "adresse": ws_src.cell(row=r, column=col_addr).value if col_addr else None,
+            "cp":      ws_src.cell(row=r, column=col_cp).value if col_cp else None,
+            "ville":   ws_src.cell(row=r, column=col_ville).value if col_ville else None,
             "entree": d, "fin": end, "mois": months_until,
         })
     return rows
@@ -134,7 +175,6 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
             c.font = cell_font
             c.alignment = Alignment(vertical="center")
             if i == 2 and r["id"] is not None:
-                # Lien Pipedrive cliquable
                 c.value = "Ouvrir"
                 c.hyperlink = f"https://{PIPEDRIVE_DOMAIN}.pipedrive.com/organization/{r['id']}"
                 c.font = link_font
@@ -161,7 +201,7 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
             if i > len(AUTO_COLS):
                 c.fill = manual_fill_cell
 
-    mois_col = get_column_letter(9)  # "Mois restants" = col 9 (I)
+    mois_col = get_column_letter(9)
     mois_range = f"{mois_col}{header_row + 1}:{mois_col}{last_data_row + extra_rows}"
     for op, formula, bg, fg in [
         ("lessThan", ["3"], "F8CBAD", "9C0006"),
@@ -174,7 +214,7 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
                        fill=PatternFill("solid", start_color=bg),
                        font=Font(bold=True, color=fg)))
 
-    statut_letter = get_column_letter(len(AUTO_COLS) + 6)  # "Statut" = 6e col manuelle
+    statut_letter = get_column_letter(len(AUTO_COLS) + 6)
     statut_range = f"{statut_letter}{header_row + 1}:{statut_letter}{last_data_row + extra_rows}"
     for val, bg, fg in [("OK signé", "C6EFCE", "006100"),
                          ("À rappeler", "FFEB9C", "9C5700"),
@@ -191,7 +231,7 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
     s.add_data_validation(dv)
 
     s.auto_filter.ref = f"A{header_row}:{last_col}{last_data_row + extra_rows}"
-    s.freeze_panes = s.cell(row=header_row + 1, column=4)  # figer ID + Lien + Société
+    s.freeze_panes = s.cell(row=header_row + 1, column=4)
 
 
 def _write_readme(wb, today, counts):
@@ -229,21 +269,20 @@ def _write_readme(wb, today, counts):
         r.row_dimensions[i].height = 26
 
 
-def generate(source_bytes: bytes, today=None) -> bytes:
-    """Prend un xlsx source en bytes, renvoie le xlsx généré en bytes."""
+def generate(source_bytes: bytes, mapping: dict = None, today=None) -> tuple[bytes, dict]:
+    """Prend un xlsx source en bytes + mapping optionnel, renvoie (xlsx, cat_rows)."""
     today = today or date.today()
+    mapping = mapping or DEFAULT_MAPPING
 
-    # Un seul chargement : data_only=True pour lire les valeurs, on l'utilisera aussi pour écrire.
     wb = openpyxl.load_workbook(BytesIO(source_bytes), data_only=True)
-    # Chercher l'onglet "Données" s'il existe, sinon utiliser l'onglet actif
+
     if "Données" in wb.sheetnames:
         ws_src = wb["Données"]
     else:
         ws_src = wb.active
         ws_src.title = "Données"
 
-    # Nettoyage : supprime les formules/références externes cassées et les erreurs Excel
-    # (ex : VLOOKUP vers un classeur externe qui n'existe plus, valeurs #N/A, #REF!, etc.)
+    # Nettoyage formules cassées
     for row in ws_src.iter_rows():
         for cell in row:
             v = cell.value
@@ -252,14 +291,12 @@ def generate(source_bytes: bytes, today=None) -> bytes:
                     cell.value = None
                 elif v.strip() in ("#N/A", "#REF!", "#VALUE!", "#NAME?", "#DIV/0!", "#NUM!", "#NULL!"):
                     cell.value = None
-
-    # Supprime les liens externes du workbook (références vers d'autres classeurs)
     try:
         wb._external_links = []
     except Exception:
         pass
 
-    rows = _extract_rows(ws_src, today)
+    rows = _extract_rows(ws_src, today, mapping)
     cat_rows = {
         "Fin < 6 mois":  sorted([r for r in rows if r["mois"] < 6], key=lambda x: (x["mois"], x["fin"])),
         "Fin 6-9 mois":  sorted([r for r in rows if 6 <= r["mois"] < 9], key=lambda x: (x["mois"], x["fin"])),
@@ -276,4 +313,4 @@ def generate(source_bytes: bytes, today=None) -> bytes:
 
     out = BytesIO()
     wb.save(out)
-    return out.getvalue()
+    return out.getvalue(), cat_rows
