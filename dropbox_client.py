@@ -65,19 +65,30 @@ def fetch_xlsx_files() -> list[tuple[str, bytes]]:
 
     return results
 
-
 def upload_file(filename: str, content: bytes):
     """Upload un fichier dans le dossier Dropbox (écrase si existant)."""
     if not is_configured():
         return
     token = _get_access_token()
+    import urllib.parse
+    api_arg = json.dumps({
+        "path": f"{DROPBOX_FOLDER}/{filename}",
+        "mode": "overwrite",
+        "autorename": False,
+        "mute": False,
+        "strict_conflict": False,
+    })
     r = requests.post("https://content.dropboxapi.com/2/files/upload",
         headers={
             "Authorization": f"Bearer {token}",
-            "Dropbox-API-Arg": json.dumps({
-                "path": f"{DROPBOX_FOLDER}/{filename}",
-                "mode": "overwrite",
-                "autorename": False,
+            "Dropbox-API-Arg": api_arg,
+            "Content-Type": "application/octet-stream",
+        }, data=content, timeout=120)
+    if not r.ok:
+        log.error(f"Dropbox upload response: {r.status_code} {r.text}")
+    r.raise_for_status()
+    log.info(f"Dropbox: ↑ {filename} uploadé")
+
             }),
             "Content-Type": "application/octet-stream",
         }, data=content, timeout=120)
