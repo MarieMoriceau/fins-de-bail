@@ -4,16 +4,14 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 300
+    startCommand: gunicorn app:app --timeout 300 --workers 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      # Notion (optionnel — si absent, seul l'Excel est généré)
       - key: NOTION_TOKEN
         sync: false
       - key: BAUX_DATABASE_ID
         sync: false
-      # Email SMTP (optionnel — si absent, pas d'envoi mail)
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT

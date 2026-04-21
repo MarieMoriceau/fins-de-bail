@@ -1,17 +1,17 @@
 """
-app.py — Générateur fins de bail tout-en-un.
+app.py — Générateur fins de bail + sync Notion + mail.
 
-Flow :
-  1. GET  /           → page d'accueil (upload + email + lien template)
-  2. POST /upload     → lit les headers du fichier, affiche la page de mapping
-  3. POST /generate   → génère Excel + sync Notion + envoi mail + téléchargement
-  4. GET  /template   → télécharge le fichier template vierge
+Optimisé mémoire :
+- L'Excel est renvoyé immédiatement à l'utilisateur
+- La sync Notion se lance en arrière-plan (background thread)
 """
 
+import gc
 import json
 import logging
 import os
 import tempfile
+import threading
 from datetime import date
 from io import BytesIO
 
@@ -26,9 +26,8 @@ log = logging.getLogger("app")
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-fins-de-bail-2026")
-app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 Mo
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
-# Stockage temporaire du fichier uploadé entre /upload et /generate
 _temp_files = {}
 
 
@@ -56,7 +55,6 @@ def upload():
     source_bytes = f.read()
     email = request.form.get("email", "").strip()
 
-    # Lire les headers
     try:
         headers = read_headers(source_bytes)
     except Exception as e:
@@ -64,24 +62,27 @@ def upload():
         return redirect(url_for("index"))
 
     if not headers:
-        flash("Le fichier semble vide (pas de headers en ligne 1)", "error")
+        flash("Fichier vide (pas de headers en ligne 1)", "error")
         return redirect(url_for("index"))
 
-    # Sauvegarder temporairement
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
     tmp.write(source_bytes)
     tmp.close()
+    del source_bytes
+    gc.collect()
+
     file_id = os.path.basename(tmp.name)
     _temp_files[file_id] = tmp.name
 
-    # Auto-matching : essayer de deviner le mapping
+    # Auto-matching
     auto_map = {}
     header_lower = {col: h.lower() for col, h in headers}
     guesses = {
         "id":      ["id", "identifiant", "id pipedrive", "id société"],
         "societe": ["société", "societe", "nom", "raison sociale", "company"],
-        "date":    ["date adresse retenue", "date d'entrée", "date entrée", "date début bail",
-                    "📅 date adresse retenue", "date adresse"],
+        "date":    ["date adresse retenue", "date d'entrée", "date entrée",
+                    "📅 date adresse retenue", "date adresse",
+                    "date entrée dans les lieux"],
         "siren":   ["siren", "siren pappers", "siren sirene", "n° siren"],
         "adresse": ["adresse", "adresse retenue", "✅ adresse retenue", "adresse complète"],
         "cp":      ["cp", "code postal", "siège cp", "zip"],
@@ -95,13 +96,10 @@ def upload():
 
     all_fields = {**REQUIRED_FIELDS, **OPTIONAL_FIELDS}
     return render_template("mapping.html",
-                           headers=headers,
-                           fields=all_fields,
+                           headers=headers, fields=all_fields,
                            required=set(REQUIRED_FIELDS.keys()),
-                           auto_map=auto_map,
-                           file_id=file_id,
-                           email=email,
-                           filename=f.filename,
+                           auto_map=auto_map, file_id=file_id,
+                           email=email, filename=f.filename,
                            notion_ok=notion_configured(),
                            mail_ok=mail_configured())
 
@@ -120,14 +118,13 @@ def generate_route():
         source_bytes = f.read()
     os.unlink(tmp_path)
 
-    # Construire le mapping depuis le formulaire
+    # Mapping
     mapping = {}
     for field in list(REQUIRED_FIELDS) + list(OPTIONAL_FIELDS):
         val = request.form.get(f"map_{field}", "")
         if val:
             mapping[field] = int(val)
 
-    # Vérifier les champs requis
     missing = [REQUIRED_FIELDS[f] for f in REQUIRED_FIELDS if f not in mapping]
     if missing:
         flash(f"Champs requis manquants : {', '.join(missing)}", "error")
@@ -135,29 +132,40 @@ def generate_route():
 
     today = date.today()
 
-    # 1. Génération Excel
+    # 1. Génération Excel (mémoire optimisée : read_only + nouveau wb)
     log.info("Génération Excel...")
     xlsx_bytes, cat_rows = generate(source_bytes, mapping, today)
+    del source_bytes
+    gc.collect()
+
     counts = {k: len(v) for k, v in cat_rows.items()}
     total = sum(counts.values())
     log.info(f"  OK : {total} sociétés ({counts})")
 
-    # 2. Sync Notion
-    if notion_configured():
-        log.info("Sync Notion...")
-        try:
-            stats = sync_to_notion(cat_rows)
-            log.info(f"  Notion : {stats}")
-        except Exception as e:
-            log.error(f"  Notion erreur : {e}")
-
-    # 3. Envoi mail
+    # 2. Mail (rapide, avant de libérer xlsx_bytes)
     filename = f"Fins_de_bail_triennal_{today.strftime('%Y-%m-%d')}.xlsx"
     if email and mail_configured():
         log.info(f"Envoi mail à {email}...")
-        send_mail(email, xlsx_bytes, filename, counts)
+        try:
+            send_mail(email, xlsx_bytes, filename, counts)
+        except Exception as e:
+            log.error(f"Mail erreur : {e}")
 
-    # 4. Téléchargement
+    # 3. Notion en arrière-plan (ne bloque pas le téléchargement)
+    if notion_configured():
+        # Copier cat_rows en données légères pour le thread
+        cat_rows_copy = {k: list(v) for k, v in cat_rows.items()}
+        def bg_sync():
+            try:
+                gc.collect()
+                log.info("Sync Notion (arrière-plan)...")
+                stats = sync_to_notion(cat_rows_copy)
+                log.info(f"  Notion terminé : {stats}")
+            except Exception as e:
+                log.error(f"  Notion erreur : {e}")
+        threading.Thread(target=bg_sync, daemon=True).start()
+
+    # 4. Téléchargement immédiat
     return send_file(
         BytesIO(xlsx_bytes),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -1,6 +1,8 @@
 """Génère le fichier de suivi commercial des fins de bail triennales.
 
-Accepte un mapping de colonnes dynamique pour s'adapter à tout fichier source.
+Optimisé mémoire pour Render Free (512 Mo) :
+- Extraction en read_only, puis fermeture immédiate
+- Construction de l'output dans un nouveau workbook léger
 """
 from datetime import date, datetime
 from io import BytesIO
@@ -15,9 +17,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 PIPEDRIVE_DOMAIN = "equationsie"
 
-# Champs requis du fichier source → clé interne
 REQUIRED_FIELDS = {
-    "id":      "ID (identifiant unique, ex: ID Pipedrive)",
+    "id":      "ID (identifiant unique)",
     "societe": "Nom de la société",
     "date":    "Date d'entrée dans les lieux",
 }
@@ -27,8 +28,6 @@ OPTIONAL_FIELDS = {
     "cp":      "Code postal",
     "ville":   "Ville",
 }
-
-# Mapping par défaut (fichier Equation standard, colonnes 1-indexed)
 DEFAULT_MAPPING = {
     "id": 1, "societe": 2, "siren": 3, "cp": 12, "ville": 13, "adresse": 28, "date": 30,
 }
@@ -73,12 +72,9 @@ def _months_diff(start, end):
 
 
 def read_headers(source_bytes: bytes) -> list[tuple[int, str]]:
-    """Lit la ligne 1 du fichier et renvoie [(col_index_1based, header_text), ...]."""
+    """Lit les headers (ligne 1) du fichier source."""
     wb = openpyxl.load_workbook(BytesIO(source_bytes), data_only=True, read_only=True)
-    if "Données" in wb.sheetnames:
-        ws = wb["Données"]
-    else:
-        ws = wb.active
+    ws = wb["Données"] if "Données" in wb.sheetnames else wb.active
     headers = []
     for c in range(1, ws.max_column + 1):
         v = ws.cell(row=1, column=c).value
@@ -88,8 +84,11 @@ def read_headers(source_bytes: bytes) -> list[tuple[int, str]]:
     return headers
 
 
-def _extract_rows(ws_src, today, mapping):
-    """Extrait les lignes avec le mapping dynamique."""
+def _extract_rows(source_bytes: bytes, today, mapping):
+    """Extrait les données en mode read_only puis ferme le workbook."""
+    wb = openpyxl.load_workbook(BytesIO(source_bytes), data_only=True, read_only=True)
+    ws = wb["Données"] if "Données" in wb.sheetnames else wb.active
+
     col_id   = mapping["id"]
     col_soc  = mapping["societe"]
     col_date = mapping["date"]
@@ -98,36 +97,62 @@ def _extract_rows(ws_src, today, mapping):
     col_cp    = mapping.get("cp")
     col_ville = mapping.get("ville")
 
+    # Déterminer les colonnes max à lire
+    all_cols = [col_id, col_soc, col_date]
+    for c in [col_siren, col_addr, col_cp, col_ville]:
+        if c:
+            all_cols.append(c)
+    max_col = max(all_cols)
+
     seen = set()
     rows = []
-    for r in range(2, ws_src.max_row + 1):
-        id_ = ws_src.cell(row=r, column=col_id).value
-        if id_ is None or id_ in seen:
+    row_num = 0
+    for row_cells in ws.iter_rows(min_row=2, max_col=max_col, values_only=False):
+        row_num += 1
+        id_val = row_cells[col_id - 1].value if col_id - 1 < len(row_cells) else None
+        if id_val is None or id_val in seen:
             continue
-        seen.add(id_)
-        d = _parse_date(ws_src.cell(row=r, column=col_date).value)
+        # Ignorer les formules et erreurs
+        if isinstance(id_val, str) and (id_val.startswith("=") or id_val.strip().startswith("#")):
+            continue
+        seen.add(id_val)
+
+        date_raw = row_cells[col_date - 1].value if col_date - 1 < len(row_cells) else None
+        if isinstance(date_raw, str) and (date_raw.startswith("=") or date_raw.strip().startswith("#")):
+            date_raw = None
+        d = _parse_date(date_raw)
         if d is None:
             continue
+
         months_since = _months_diff(d, today)
         n_cycles = months_since // 36 + 1
         end = d + relativedelta(months=n_cycles * 36)
         months_until = _months_diff(today, end)
+
+        def _get(col):
+            if col and col - 1 < len(row_cells):
+                v = row_cells[col - 1].value
+                if isinstance(v, str) and (v.startswith("=") or v.strip().startswith("#")):
+                    return None
+                return v
+            return None
+
         rows.append({
-            "id": id_,
-            "societe": ws_src.cell(row=r, column=col_soc).value,
-            "siren":   ws_src.cell(row=r, column=col_siren).value if col_siren else None,
-            "adresse": ws_src.cell(row=r, column=col_addr).value if col_addr else None,
-            "cp":      ws_src.cell(row=r, column=col_cp).value if col_cp else None,
-            "ville":   ws_src.cell(row=r, column=col_ville).value if col_ville else None,
+            "id": id_val,
+            "societe": _get(col_soc),
+            "siren":   _get(col_siren),
+            "adresse": _get(col_addr),
+            "cp":      _get(col_cp),
+            "ville":   _get(col_ville),
             "entree": d, "fin": end, "mois": months_until,
         })
+
+    wb.close()  # Libère la mémoire du workbook source
     return rows
 
 
 def _write_call_sheet(wb, sheet_name, data_list, today):
     tag, color = CAT_META[sheet_name]
-    if sheet_name in wb.sheetnames:
-        del wb[sheet_name]
     s = wb.create_sheet(sheet_name)
     total_cols = len(AUTO_COLS) + len(MANUAL_COLS)
     last_col = get_column_letter(total_cols)
@@ -235,8 +260,6 @@ def _write_call_sheet(wb, sheet_name, data_list, today):
 
 
 def _write_readme(wb, today, counts):
-    if "Mode d'emploi" in wb.sheetnames:
-        del wb["Mode d'emploi"]
     r = wb.create_sheet("Mode d'emploi", 0)
     r.column_dimensions["A"].width = 28
     r.column_dimensions["B"].width = 100
@@ -250,7 +273,7 @@ def _write_readme(wb, today, counts):
     total = sum(counts.values())
     lines = [
         ("", ""),
-        ("Date de calcul", f"{today.strftime('%d/%m/%Y')} — {total} sociétés au total (doublons supprimés)."),
+        ("Date de calcul", f"{today.strftime('%d/%m/%Y')} — {total} sociétés au total."),
         ("", ""),
         ("🔴 Fin < 6 mois", f"{counts['Fin < 6 mois']} sociétés — priorité HAUTE."),
         ("🟠 Fin 6-9 mois", f"{counts['Fin 6-9 mois']} sociétés — priorité MOYENNE."),
@@ -270,47 +293,31 @@ def _write_readme(wb, today, counts):
 
 
 def generate(source_bytes: bytes, mapping: dict = None, today=None) -> tuple[bytes, dict]:
-    """Prend un xlsx source en bytes + mapping optionnel, renvoie (xlsx, cat_rows)."""
+    """Extrait les données (read_only), puis construit un nouveau workbook pour l'output."""
     today = today or date.today()
     mapping = mapping or DEFAULT_MAPPING
 
-    wb = openpyxl.load_workbook(BytesIO(source_bytes), data_only=True)
+    # Phase 1 : extraction (read_only → libère la RAM du source)
+    rows = _extract_rows(source_bytes, today, mapping)
 
-    if "Données" in wb.sheetnames:
-        ws_src = wb["Données"]
-    else:
-        ws_src = wb.active
-        ws_src.title = "Données"
-
-    # Nettoyage formules cassées
-    for row in ws_src.iter_rows():
-        for cell in row:
-            v = cell.value
-            if isinstance(v, str):
-                if v.startswith("="):
-                    cell.value = None
-                elif v.strip() in ("#N/A", "#REF!", "#VALUE!", "#NAME?", "#DIV/0!", "#NUM!", "#NULL!"):
-                    cell.value = None
-    try:
-        wb._external_links = []
-    except Exception:
-        pass
-
-    rows = _extract_rows(ws_src, today, mapping)
+    # Phase 2 : catégorisation
     cat_rows = {
         "Fin < 6 mois":  sorted([r for r in rows if r["mois"] < 6], key=lambda x: (x["mois"], x["fin"])),
         "Fin 6-9 mois":  sorted([r for r in rows if 6 <= r["mois"] < 9], key=lambda x: (x["mois"], x["fin"])),
         "Fin 9-12 mois": sorted([r for r in rows if 9 <= r["mois"] <= 12], key=lambda x: (x["mois"], x["fin"])),
     }
+    del rows  # Libère la liste complète
     counts = {k: len(v) for k, v in cat_rows.items()}
+
+    # Phase 3 : nouveau workbook (pas de rechargement du source)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)  # Supprime la feuille par défaut
 
     for sheet_name, data_list in cat_rows.items():
         _write_call_sheet(wb, sheet_name, data_list, today)
     _write_readme(wb, today, counts)
 
-    order = ["Mode d'emploi", "Fin < 6 mois", "Fin 6-9 mois", "Fin 9-12 mois", "Données"]
-    wb._sheets = [wb[n] for n in order if n in wb.sheetnames]
-
     out = BytesIO()
     wb.save(out)
+    wb.close()
     return out.getvalue(), cat_rows
